@@ -1,4 +1,4 @@
-﻿name: WildTransfer Android Build And Release
+name: WildTransfer Android Build And Release
 
 on:
   workflow_dispatch:
