@@ -1,6 +1,6 @@
 {
   "name": "wildtransfer",
-  "version": "2026.2.25-0010",
+  "version": "2026.2.26-230",
   "description": "WildTransfer desktop app",
   "main": "main.js",
   "author": "Ocean and Wild Studios",
@@ -44,8 +44,10 @@
       "deleteAppDataOnUninstall": false
     }
   },
-  "dependencies": {},
   "devDependencies": {
+    "@capacitor/android": "^8.1.0",
+    "@capacitor/cli": "^8.1.0",
+    "@capacitor/core": "^8.1.0",
     "electron": "^33.2.1",
     "electron-builder": "^25.1.8"
   }

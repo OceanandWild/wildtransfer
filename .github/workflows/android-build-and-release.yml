@@ -1,0 +1,359 @@
+﻿name: WildTransfer Android Build And Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Unique release tag"
+        required: true
+        type: string
+      release_name:
+        description: "Release title"
+        required: true
+        type: string
+      release_notes:
+        description: "Release notes / changelog"
+        required: false
+        type: string
+      prerelease:
+        description: "Publish as prerelease"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build tools
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          npm ci || npm install
+
+      - name: Prepare web and Android platform
+        shell: bash
+        run: |
+          mkdir -p www
+          if [ -f "index.html" ]; then
+            cp -f "index.html" "www/index.html"
+          fi
+
+          if [ -d "assets" ]; then
+            rm -rf "www/assets"
+            cp -R "assets" "www/assets"
+          fi
+
+          mkdir -p "www/build"
+          shopt -s nullglob
+          for asset in build/*.ico build/*.png; do
+            cp -f "$asset" "www/build/$(basename "$asset")"
+          done
+          shopt -u nullglob
+
+          mkdir -p resources
+          ICON_SRC=""
+          if [ -f "build/wildtransfericon.png" ]; then
+            ICON_SRC="build/wildtransfericon.png"
+          elif [ -f "build/icon.png" ]; then
+            ICON_SRC="build/icon.png"
+          elif [ -f "www/build/icon.png" ]; then
+            ICON_SRC="www/build/icon.png"
+          fi
+
+          if [ -n "$ICON_SRC" ]; then
+            cp -f "$ICON_SRC" "resources/icon.png"
+          fi
+
+          if [ ! -f "www/index.html" ]; then
+            echo "No se encontro www/index.html para webDir."
+            ls -la
+            exit 1
+          fi
+
+          if [ ! -f "capacitor.config.json" ]; then
+            cat > capacitor.config.json <<'EOF'
+          {
+            "appId": "com.oceanandwild.wildtransfer",
+            "appName": "WildTransfer",
+            "webDir": "www"
+          }
+          EOF
+          fi
+
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
+
+          if [ -f "resources/icon.png" ]; then
+            npx --yes @capacitor/assets generate --android --assetPath resources || echo "No se pudo generar iconos con @capacitor/assets; se continua con recursos actuales."
+          fi
+
+      - name: Sync Capacitor
+        shell: bash
+        run: |
+          npx cap sync android
+
+      - name: Set Android version metadata
+        shell: bash
+        run: |
+          VERSION_NAME="$(node -p "require('./package.json').version" | tr -d '\r\n')"
+          VERSION_CODE="$(date -u +%y%j%H%M)"
+          if [ -z "$VERSION_NAME" ]; then
+            VERSION_NAME="1.0.0"
+          fi
+
+          APP_ID_FROM_CONFIG="$(node -e "try{const fs=require('fs');const c=JSON.parse(fs.readFileSync('capacitor.config.json','utf8'));process.stdout.write(String(c.appId||''));}catch(_){process.stdout.write('');}")"
+          if [ -z "$APP_ID_FROM_CONFIG" ]; then
+            APP_ID_FROM_CONFIG="com.oceanandwild.wildtransfer"
+          fi
+
+          GRADLE_FILE="android/app/build.gradle"
+          if [ ! -f "$GRADLE_FILE" ]; then
+            echo "No existe $GRADLE_FILE"
+            exit 1
+          fi
+
+          sed -i -E "s/versionCode[[:space:]]+[0-9]+/versionCode ${VERSION_CODE}/" "$GRADLE_FILE"
+          sed -i -E "s/versionName[[:space:]]+\"[^\"]+\"/versionName \"${VERSION_NAME}\"/" "$GRADLE_FILE"
+
+          cat > android-release-metadata.json <<EOF
+          {
+            "project_slug": "wildtransfer",
+            "package_id": "${APP_ID_FROM_CONFIG}",
+            "version_name": "${VERSION_NAME}",
+            "version_code": ${VERSION_CODE}
+          }
+          EOF
+
+          echo "Android metadata generated:"
+          cat android-release-metadata.json
+
+      - name: Ensure install APK permission in AndroidManifest
+        shell: bash
+        run: |
+          set -e
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          if [ ! -f "$MANIFEST" ]; then
+            echo "AndroidManifest.xml no encontrado en $MANIFEST"
+            exit 1
+          fi
+          if ! grep -q "android.permission.REQUEST_INSTALL_PACKAGES" "$MANIFEST"; then
+            sed -i '/android.permission.INTERNET/a\    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />' "$MANIFEST"
+          fi
+
+      - name: Build Android artifacts
+        shell: bash
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug assembleRelease bundleRelease
+
+      - name: Detect signing config
+        shell: bash
+        env:
+          ANDROID_SIGNING_KEY_BASE64: ${{ secrets.ANDROID_SIGNING_KEY_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$ANDROID_SIGNING_KEY_BASE64" ] && [ -n "$ANDROID_KEY_ALIAS" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && [ -n "$ANDROID_KEY_PASSWORD" ]; then
+            echo "HAS_ANDROID_SIGNING=true" >> "$GITHUB_ENV"
+          else
+            echo "HAS_ANDROID_SIGNING=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Validate Android signing keystore
+        if: ${{ env.HAS_ANDROID_SIGNING == 'true' }}
+        shell: bash
+        env:
+          ANDROID_SIGNING_KEY_BASE64: ${{ secrets.ANDROID_SIGNING_KEY_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KS_PATH="$RUNNER_TEMP/ows-signing.jks"
+          printf "%s" "$ANDROID_SIGNING_KEY_BASE64" | tr -d "\r\n\t " | base64 -d > "$KS_PATH"
+          keytool -list -keystore "$KS_PATH" -storepass "$ANDROID_KEYSTORE_PASSWORD" >/dev/null
+          keytool -list -keystore "$KS_PATH" -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null
+          echo "SIGNING_KEYSTORE_PATH=$KS_PATH" >> "$GITHUB_ENV"
+
+      - name: Sign release APK
+        if: ${{ env.HAS_ANDROID_SIGNING == 'true' }}
+        shell: bash
+        env:
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          UNSIGNED_APK="android/app/build/outputs/apk/release/app-release-unsigned.apk"
+          ALIGNED_APK="android/app/build/outputs/apk/release/app-release-aligned.apk"
+          SIGNED_APK="android/app/build/outputs/apk/release/app-release-signed.apk"
+          APKSIGNER="${ANDROID_SDK_ROOT}/build-tools/34.0.0/apksigner"
+          ZIPALIGN="${ANDROID_SDK_ROOT}/build-tools/34.0.0/zipalign"
+
+          if [ ! -f "$UNSIGNED_APK" ]; then
+            echo "No se encontro APK unsigned para firmar: $UNSIGNED_APK"
+            exit 1
+          fi
+
+          if [ -z "${ANDROID_KEY_PASSWORD:-}" ]; then
+            ANDROID_KEY_PASSWORD="$ANDROID_KEYSTORE_PASSWORD"
+          fi
+
+          "$ZIPALIGN" -f -p 4 "$UNSIGNED_APK" "$ALIGNED_APK"
+
+          "$APKSIGNER" sign \
+            --ks "$SIGNING_KEYSTORE_PATH" \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+            --key-pass env:ANDROID_KEY_PASSWORD \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --v4-signing-enabled false \
+            --out "$SIGNED_APK" \
+            "$ALIGNED_APK"
+
+          "$APKSIGNER" verify --verbose "$SIGNED_APK" >/dev/null
+
+      - name: Collect release files
+        shell: bash
+        run: |
+          set -e
+          if [ "${HAS_ANDROID_SIGNING:-false}" != "true" ]; then
+            echo "Faltan secrets ANDROID_SIGNING_* para publicar APK firmado."
+            exit 1
+          fi
+
+          mkdir -p release-assets
+          SIGNED_APK="android/app/build/outputs/apk/release/app-release-signed.apk"
+          AAB_PATH="android/app/build/outputs/bundle/release/app-release.aab"
+
+          cp "$SIGNED_APK" "release-assets/WildTransfer.Android.release-signed.apk"
+          if [ -f "$AAB_PATH" ]; then
+            cp "$AAB_PATH" "release-assets/WildTransfer.Android.release.aab"
+          fi
+          cp "android-release-metadata.json" "release-assets/android-release-metadata.json"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wildtransfer-android-release-files
+          path: release-assets/**/*
+          if-no-files-found: error
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: ${{ inputs.release_name }}
+          body: ${{ inputs.release_notes }}
+          draft: false
+          prerelease: ${{ inputs.prerelease == 'true' }}
+          make_latest: false
+          files: |
+            release-assets/**/*
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Sync Android release metadata to OWS API
+        continue-on-error: true
+        shell: bash
+        env:
+          OWS_STORE_ADMIN_KEY: ${{ secrets.OWS_STORE_ADMIN_KEY }}
+        run: |
+          APK_FILE="release-assets/WildTransfer.Android.release-signed.apk"
+          META_FILE="release-assets/android-release-metadata.json"
+          if [ ! -f "$APK_FILE" ] || [ ! -f "$META_FILE" ]; then
+            echo "No hay APK/METADATA para sincronizar."
+            exit 0
+          fi
+
+          mapfile -t META_FIELDS < <(python - "$META_FILE" <<'PY'
+import json,sys
+p=sys.argv[1]
+data=json.load(open(p,'r',encoding='utf-8'))
+print(data.get('project_slug',''))
+print(data.get('package_id',''))
+print(data.get('version_name',''))
+print(data.get('version_code',''))
+PY
+          )
+
+          PROJECT_SLUG="${META_FIELDS[0]:-wildtransfer}"
+          PACKAGE_ID="${META_FIELDS[1]:-com.oceanandwild.wildtransfer}"
+          VERSION_NAME="${META_FIELDS[2]:-${{ inputs.release_tag }}}"
+          VERSION_CODE="${META_FIELDS[3]:-0}"
+
+          if ! [[ "$VERSION_CODE" =~ ^[0-9]+$ ]]; then
+            VERSION_CODE="0"
+          fi
+
+          APK_NAME="$(basename "$APK_FILE")"
+          APK_URL="https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/${APK_NAME}"
+          SIZE_BYTES="$(stat -c%s "$APK_FILE" 2>/dev/null || wc -c < "$APK_FILE")"
+          SHA256="$(sha256sum "$APK_FILE" | awk '{print $1}')"
+          PUBLISHED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+          PAYLOAD="$(python - <<PY
+import json
+payload={
+  \"project_slug\": \"${PROJECT_SLUG}\",
+  \"package_id\": \"${PACKAGE_ID}\",
+  \"version_name\": \"${VERSION_NAME}\",
+  \"version_code\": int("${VERSION_CODE}" or 0),
+  \"apk_url\": \"${APK_URL}\",
+  \"sha256\": \"${SHA256}\",
+  \"size_bytes\": int("${SIZE_BYTES}" or 0),
+  \"release_notes\": \"${{ inputs.release_notes }}\",
+  \"status\": \"published\",
+  \"is_mandatory\": False,
+  \"published_at\": \"${PUBLISHED_AT}\"
+}
+print(json.dumps(payload))
+PY
+          )"
+
+          if [ -n "${OWS_STORE_ADMIN_KEY:-}" ]; then
+            curl -fsS -X POST "https://owsdatabase.onrender.com/ows-store/android/releases" \
+              -H "Content-Type: application/json" \
+              -H "x-ows-store-admin-key: ${OWS_STORE_ADMIN_KEY}" \
+              --data "$PAYLOAD"
+          else
+            curl -fsS -X POST "https://owsdatabase.onrender.com/ows-store/android/releases" \
+              -H "Content-Type: application/json" \
+              --data "$PAYLOAD"
+          fi
