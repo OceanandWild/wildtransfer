@@ -107,11 +107,20 @@ body{min-height:100vh;color:var(--txt);background:radial-gradient(circle at 8% 5
 <div id="opAuthModal" class="modal-overlay" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Vincular cuenta de Ocean Pay</h3><button id="closeAuthModal" class="modal-close" aria-label="Cerrar">x</button></div><div class="modal-body"><p style="color:var(--muted);font-size:.86rem;line-height:1.4">Esta vinculacion permite procesar el checkout semanal sin salir de WildTransfer.</p><div class="field"><label for="opUsername">Usuario Ocean Pay</label><input id="opUsername" class="input-line" type="text" autocomplete="username" placeholder="Tu usuario"></div><div class="field"><label for="opPassword">Contrasena</label><input id="opPassword" class="input-line" type="password" autocomplete="current-password" placeholder="Tu contrasena"></div><p id="authModalMsg" style="margin-top:10px;font-size:.8rem;color:var(--muted)"></p><div class="modal-actions"><button id="authSubmitBtn" class="btn primary">Vincular y continuar</button><button id="authCancelBtn" class="btn ghost">Cancelar</button></div></div></div></div>
 <div id="wtCheckoutModal" class="modal-overlay" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Checkout WildTransfer (Semanal)</h3><button id="closeCheckoutModal" class="modal-close" aria-label="Cerrar">x</button></div><div class="modal-body"><p style="color:var(--muted);font-size:.86rem;line-height:1.4">Selecciona plan y tarjeta. El checkout usa RelayShards de forma fija para evitar errores de cobro.</p><div id="checkoutPlanGrid" class="plan-grid"></div><div class="field"><label>Divisa de pago</label><div id="checkoutCurrencyFixed" class="input-line">RelayShards (WT)</div></div><div class="field"><label for="checkoutCard">Tarjeta Ocean Pay</label><select id="checkoutCard" class="select-line"></select></div><div class="checkout-summary" id="checkoutSummary"><div class="line"><span>Plan</span><strong id="summaryPlan">-</strong></div><div class="line"><span>Cadencia</span><strong>Semanal</strong></div><div class="line"><span>Divisa</span><strong id="summaryCurrency">-</strong></div><div class="line total"><span>Total</span><strong id="summaryTotal">0</strong></div></div><p id="checkoutMsg" style="margin-top:10px;font-size:.8rem;color:var(--muted)"></p><div class="modal-actions"><button id="checkoutConfirmBtn" class="btn primary">Confirmar compra</button><button id="checkoutCancelBtn" class="btn ghost">Cancelar</button></div></div></div></div>
 <div id="toastZone" class="toastZone" aria-live="polite"></div>
+<script src="https://owsdatabase.onrender.com/shared/ows-project-guard.js"></script>
 <script>
 const HISTORY_KEY = "wildtransfer-history-v3";
 const OCEAN_SESSION_KEY = "wt-oceanpay-auth-v1";
 const isRenderHost = /(^|\.)onrender\.com$/i.test(String(location.hostname || ""));
 const API_BASE = isRenderHost && location.origin ? location.origin : "https://owsdatabase.onrender.com";
+if (window.OWSProjectRestrictionGuard && typeof window.OWSProjectRestrictionGuard.mount === "function") {
+  window.OWSProjectRestrictionGuard.mount({
+    apiBaseUrl: API_BASE,
+    projectSlug: "wildtransfer",
+    projectName: "WildTransfer",
+    checkIntervalMs: 30000
+  });
+}
 const TRANSFER_API = `${API_BASE}/api/wild-transfer`;
 const OCEAN_PAY_API = `${API_BASE}/ocean-pay`;
 const WT_SUBS_API = `${API_BASE}/wildtransfer/subscription`;
